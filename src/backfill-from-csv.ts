@@ -22,7 +22,6 @@ async function main(): Promise<number> {
   const logger = createLogger({ level: config.logLevel, logFile: config.logFile });
   const report = new ReportWriter(config.reportFile);
   const abortState: AbortState = { aborted: false };
-  const mode = config.dryRun ? 'dry' : 'wet';
 
   const allRows: CsvRow[] = [];
   for (const filePath of config.csvFiles) {

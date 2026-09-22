@@ -21,6 +21,9 @@ export interface CsvSummary {
   rowsScanned: number;
   rowsSkippedInvalidCustomer: number;
   customersProcessed: number;
+  customersUpdated: number;
+  customersWouldUpdate: number;
+  customersSkippedAlreadyCorrect: number;
   customersFailed: number;
   cardsScanned: number;
   cardsUpdated: number;
@@ -37,6 +40,9 @@ function createSummary(): CsvSummary {
     rowsScanned: 0,
     rowsSkippedInvalidCustomer: 0,
     customersProcessed: 0,
+    customersUpdated: 0,
+    customersWouldUpdate: 0,
+    customersSkippedAlreadyCorrect: 0,
     customersFailed: 0,
     cardsScanned: 0,
     cardsUpdated: 0,
@@ -65,6 +71,11 @@ function blankToNull(value: string | null | undefined): string | null {
 function idempotencyKey(cardId: string, name: string): string {
   const digest = createHash('sha256').update(name).digest('hex').slice(0, 16);
   return `card-name-from-csv:${cardId}:${digest}`;
+}
+
+function customerIdempotencyKey(customerId: string, name: string): string {
+  const digest = createHash('sha256').update(name).digest('hex').slice(0, 16);
+  return `customer-name-from-csv:${customerId}:${digest}`;
 }
 
 async function runWithConcurrency<T>(
@@ -202,6 +213,98 @@ async function processCard(
   }
 }
 
+async function updateCustomerName(
+  deps: CsvBackfillDeps,
+  summary: CsvSummary,
+  row: CsvRow,
+): Promise<void> {
+  const { logger, report, config, stripe, callStripe } = deps;
+  const logContext = {
+    customer_id: row.customerId,
+    new_name: row.fullName,
+  };
+
+  try {
+    const customer = await callStripe(
+      'customers.retrieve',
+      () => stripe.customers.retrieve(row.customerId),
+      { customer_id: row.customerId },
+    );
+
+    if ('deleted' in customer && customer.deleted) {
+      summary.customersFailed += 1;
+      logger.warn({ ...logContext }, 'customer is deleted, skipping customer name update');
+      report.write({
+        customerId: row.customerId,
+        cardId: '',
+        brand: '',
+        last4: '',
+        newName: row.fullName,
+        action: 'failed',
+        error: 'customer is deleted',
+      });
+      return;
+    }
+
+    if (blankToNull(customer.name) === row.fullName) {
+      summary.customersSkippedAlreadyCorrect += 1;
+      logger.info({ ...logContext, action: 'skipped_customer_already_correct' }, 'customer name already correct');
+      return;
+    }
+
+    if (config.dryRun) {
+      summary.customersWouldUpdate += 1;
+      logger.info({ ...logContext, action: 'would_update_customer' }, 'dry run: would set customer name');
+      report.write({
+        customerId: row.customerId,
+        cardId: '',
+        brand: '',
+        last4: '',
+        newName: row.fullName,
+        action: 'would_update_customer',
+      });
+      return;
+    }
+
+    await callStripe(
+      'customers.update',
+      () =>
+        stripe.customers.update(
+          row.customerId,
+          { name: row.fullName },
+          { idempotencyKey: customerIdempotencyKey(row.customerId, row.fullName) },
+        ),
+      logContext,
+    );
+    summary.customersUpdated += 1;
+    logger.info({ ...logContext, action: 'updated_customer' }, 'customer name updated');
+    report.write({
+      customerId: row.customerId,
+      cardId: '',
+      brand: '',
+      last4: '',
+      newName: row.fullName,
+      action: 'updated_customer',
+    });
+  } catch (error) {
+    const err = asStripeError(error);
+    summary.customersFailed += 1;
+    logger.error(
+      { ...logContext, stripe_code: err.code, request_id: err.requestId },
+      'customer name update failed',
+    );
+    report.write({
+      customerId: row.customerId,
+      cardId: '',
+      brand: '',
+      last4: '',
+      newName: row.fullName,
+      action: 'failed',
+      error: err.message ?? String(error),
+    });
+  }
+}
+
 async function processCustomerFromCsv(
   deps: CsvBackfillDeps,
   summary: CsvSummary,
@@ -216,6 +319,8 @@ async function processCustomerFromCsv(
     logger.warn({ customer_id: row.customerId, action: 'skipped_invalid_customer_id' }, 'skipping row with invalid customer id');
     return;
   }
+
+  await updateCustomerName(deps, summary, row);
 
   try {
     const cards = await listCardSources(deps, row.customerId);
@@ -292,6 +397,8 @@ export async function runCsvBackfill(
       {
         batch: summary.batches,
         rows_scanned: summary.rowsScanned,
+        customers_updated: config.dryRun ? summary.customersWouldUpdate : summary.customersUpdated,
+        customers_failed: summary.customersFailed,
         cards_updated: config.dryRun ? summary.cardsWouldUpdate : summary.cardsUpdated,
         cards_failed: summary.cardsFailed,
       },

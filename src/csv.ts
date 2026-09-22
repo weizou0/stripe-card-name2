@@ -59,7 +59,7 @@ export function readCustomerNameCsv(filePath: string): CsvRow[] {
   const lines = contents.split(/\r?\n/).filter((line) => line.trim() !== '');
   if (lines.length === 0) return [];
 
-  const headers = parseCsvLine(lines[0]);
+  const headers = parseCsvLine(lines[0]!);
   const customerIdIndex = findColumnIndex(headers, [
     'customer_id',
   ]);
@@ -76,7 +76,7 @@ export function readCustomerNameCsv(filePath: string): CsvRow[] {
 
   const rows: CsvRow[] = [];
   for (let index = 1; index < lines.length; index += 1) {
-    const fields = parseCsvLine(lines[index]);
+    const fields = parseCsvLine(lines[index]!);
     const customerId = fields[customerIdIndex]?.trim();
     const fullName = fields[fullNameIndex]?.trim();
     if (!customerId || !fullName) continue;
