@@ -6,6 +6,8 @@ export type CardAction =
   | 'would_update'
   | 'skipped_card_has_name'
   | 'skipped_no_customer_name'
+  | 'skipped_already_correct'
+  | 'skipped_no_cards'
   | 'failed';
 
 export interface ReportRow {
